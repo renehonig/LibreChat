@@ -1,0 +1,6 @@
+# secrets & generated state - never commit
+deploy/.env
+deploy/librechat.env.snippet
+deploy/keys/
+deploy/data/
+dist/

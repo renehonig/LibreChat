@@ -1,0 +1,214 @@
+# LibreChat Code Interpreter (codeapi) - self-hosted, hardened, offline sandbox.
+# Derived from LibreChat-AI/code-interpreter v1.2.0 docker-compose.yaml with:
+#   - service names prefixed `codeapi-` (avoids DNS alias collision with LibreChat's own `api` service)
+#   - no host port bindings (LibreChat reaches `codeapi-api` over `librechat_default`)
+#   - internal-only docker network (codeapi services get no internet either)
+#   - LOCAL_MODE=false + LibreChat JWT auth; secrets from .env (see gen-secrets.sh)
+#   - reduced footprint: 1 replica each, smaller microVM, memory limits
+name: codeapi
+
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+  codeapi-api:
+    <<: *restart
+    image: ghcr.io/renehonig/codeapi-api@sha256:7ad6f208fa5a7cbcfef1172ee78095d4cedc2548f9bceddb7379c149f2e3b024
+    networks:
+      - default
+      - librechat_default
+    environment:
+      - LOCAL_MODE=false
+      - CODEAPI_HARDENED_SANDBOX_MODE=true
+      - CODEAPI_AUTH_PROVIDER=librechat-jwt
+      - CODEAPI_JWT_ISSUER=${CODEAPI_JWT_ISSUER}
+      - CODEAPI_JWT_AUDIENCE=${CODEAPI_JWT_AUDIENCE}
+      - CODEAPI_JWT_ALLOWED_ALGS=${CODEAPI_JWT_ALLOWED_ALGS}
+      - CODEAPI_JWT_KID=${CODEAPI_JWT_KID}
+      - CODEAPI_JWT_JWKS_JSON=${CODEAPI_JWT_JWKS_JSON}
+      - CODEAPI_JWT_MAX_TTL_SECONDS=300
+      - CODEAPI_JWT_SINGLE_TENANT_ID=${CODEAPI_JWT_SINGLE_TENANT_ID}
+      - CODEAPI_BRIDGE_TOKEN=${CODEAPI_BRIDGE_TOKEN}
+      - CODEAPI_BRIDGE_AUTH_MODE=paired
+      - CODEAPI_BRIDGE_DYNAMIC_WORKERS=true
+      - CODEAPI_INTERNAL_SERVICE_TOKEN=${CODEAPI_INTERNAL_SERVICE_TOKEN}
+      - SERVICE_PORT=3112
+      - SANDBOX_ENDPOINT=http://codeapi-sandbox:2000/api/v2
+      - EGRESS_GATEWAY_URL=http://codeapi-egress:3190
+      - FILE_SERVER_URL=http://codeapi-files:3000
+      - TOOL_CALL_SERVER_URL=http://codeapi-toolcall:3033
+      - REDIS_HOST=codeapi-redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    mem_limit: 512m
+    depends_on:
+      - codeapi-redis
+      - codeapi-toolcall
+
+  codeapi-worker:
+    <<: *restart
+    image: ghcr.io/renehonig/codeapi-service-worker@sha256:61562b0dd8f061d9badaa52431910b9ebf10daa302a1b529b4c8e0682eb4436a
+    networks: [default]
+    environment:
+      - LOCAL_MODE=false
+      - CODEAPI_HARDENED_SANDBOX_MODE=true
+      - CODEAPI_AUTH_PROVIDER=librechat-jwt
+      - CODEAPI_JWT_SINGLE_TENANT_ID=${CODEAPI_JWT_SINGLE_TENANT_ID}
+      - CODEAPI_EXECUTION_MANIFEST_PRIVATE_KEY=${CODEAPI_EXECUTION_MANIFEST_PRIVATE_KEY}
+      - CODEAPI_BRIDGE_TOKEN=${CODEAPI_BRIDGE_TOKEN}
+      - CODEAPI_BRIDGE_AUTH_MODE=paired
+      - CODEAPI_BRIDGE_DYNAMIC_WORKERS=true
+      - CODEAPI_INTERNAL_SERVICE_TOKEN=${CODEAPI_INTERNAL_SERVICE_TOKEN}
+      - SANDBOX_ENDPOINT=http://codeapi-sandbox:2000/api/v2
+      - EGRESS_GATEWAY_URL=http://codeapi-egress:3190
+      - REDIS_HOST=codeapi-redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - PYTHON_CONCURRENCY=${PYTHON_CONCURRENCY:-1}
+      - OTHER_CONCURRENCY=${OTHER_CONCURRENCY:-4}
+      - WORKER_HEALTH_PORT=3113
+    mem_limit: 512m
+    depends_on:
+      codeapi-redis:
+        condition: service_started
+      codeapi-sandbox:
+        condition: service_healthy
+
+  codeapi-sandbox:
+    <<: *restart
+    image: ghcr.io/renehonig/codeapi-sandbox-runner@sha256:90479b533bf280770641475e1bb2283efe77b6ad25471b2bc5915d5368961d1c
+    networks: [default]
+    privileged: false
+    devices:
+      - /dev/kvm:/dev/kvm
+    volumes:
+      - ./data/pkgs:/host-packages:ro
+    environment:
+      - KVM_ENABLED=true
+      # Baked mode: /pkgs lives in the read-only ext4 block root, not a virtio-fs share.
+      - LAUNCHER_PACKAGES_HOST=/disabled-host-packages
+      - CODEAPI_HARDENED_SANDBOX_MODE=true
+      - EGRESS_GATEWAY_URL=http://codeapi-egress:3190
+      - SANDBOX_EXECUTE_BODY_LIMIT=50mb
+      - SANDBOX_PACKAGES_DIRECTORY=/pkgs
+      - SANDBOX_LOG_LEVEL=INFO
+      - SANDBOX_OUTPUT_MAX_SIZE=65536
+      - SANDBOX_MAX_CONCURRENT_JOBS=${SANDBOX_MAX_CONCURRENT_JOBS:-2}
+      - SANDBOX_PER_JOB_UIDS=true
+      - SANDBOX_JOB_UID_BASE=200000
+      - SANDBOX_JOB_GID_BASE=200000
+      - SANDBOX_WORKSPACE_REAPER_MAX_AGE_SECONDS=3600
+      - SANDBOX_RUN_TIMEOUT=120000
+      - SANDBOX_RUN_CPU_TIME=120000
+      - SANDBOX_COMPILE_TIMEOUT=30000
+      - LAUNCHER_VCPUS=${LAUNCHER_VCPUS:-2}
+      - LAUNCHER_RAM_MIB=${LAUNCHER_RAM_MIB:-1024}
+      - LAUNCHER_LOG_LEVEL=3
+      # Sandbox egress is limited to the brokered gateway; no general network.
+      - SANDBOX_ALLOWED_LOCAL_NETWORK_PORT=3190
+      - SANDBOX_FORWARD_TARGET=codeapi-egress:3190
+      - SANDBOX_REQUIRE_EGRESS_MANIFEST=true
+      - SANDBOX_EXECUTION_MANIFEST_PUBLIC_KEY=${SANDBOX_EXECUTION_MANIFEST_PUBLIC_KEY}
+      - SANDBOX_RUNNER_CLOCK_SKEW_LIVENESS_LIMIT_SECONDS=10
+      - SANDBOX_RUNNER_HEALTHCHECK_TIMEOUT_SECONDS=2
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/sandbox-runner-healthcheck.sh"]
+      interval: 10s
+      timeout: 3s
+      retries: 60
+      start_period: 30s
+    depends_on:
+      - codeapi-egress
+
+  codeapi-egress:
+    <<: *restart
+    image: ghcr.io/renehonig/codeapi-egress_gateway@sha256:d5b63a674b0a9b94cc4a52a97fac64324a046b0c46bd47025c95dbcfcd610170
+    networks: [default]
+    environment:
+      - SERVICE_NAME=egress-gateway
+      - CODEAPI_HARDENED_SANDBOX_MODE=true
+      - CODEAPI_EGRESS_LEDGER_REQUIRED=true
+      - EGRESS_GATEWAY_PORT=3190
+      - EGRESS_GATEWAY_FILE_SERVER_URL=http://codeapi-files:3000
+      - EGRESS_GATEWAY_TOOL_CALL_SERVER_URL=http://codeapi-toolcall:3033
+      - EGRESS_GATEWAY_MAX_TOOL_CALL_BYTES=1048576
+      - CODEAPI_EGRESS_GRANT_SECRET=${CODEAPI_EGRESS_GRANT_SECRET}
+      - CODEAPI_INTERNAL_SERVICE_TOKEN=${CODEAPI_INTERNAL_SERVICE_TOKEN}
+      - REDIS_HOST=codeapi-redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    mem_limit: 256m
+    depends_on:
+      - codeapi-files
+      - codeapi-toolcall
+      - codeapi-redis
+
+  codeapi-toolcall:
+    <<: *restart
+    image: ghcr.io/renehonig/codeapi-tool_call_server@sha256:c6324193110fbe063bb7a1f849cc3ccd7bb730a0aa9a90c4d40d7a48f671bf17
+    networks: [default]
+    environment:
+      - TOOL_CALL_SERVER_PORT=3033
+      - TOOL_CALL_REQUEST_TIMEOUT=300000
+      - TOOL_CALL_SESSION_EXPIRY=600
+      - REDIS_HOST=codeapi-redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - CODEAPI_INTERNAL_SERVICE_TOKEN=${CODEAPI_INTERNAL_SERVICE_TOKEN}
+    mem_limit: 256m
+    depends_on:
+      - codeapi-redis
+
+  codeapi-files:
+    <<: *restart
+    image: ghcr.io/renehonig/codeapi-file_server@sha256:f8fa526a57d86fd34b712fc822255f875a52476296a626ca738729bfff846f70
+    networks: [default]
+    environment:
+      - MINIO_BUCKET=${MINIO_BUCKET}
+      - MINIO_ENDPOINT=codeapi-minio
+      - MINIO_PORT=9000
+      - MINIO_USE_SSL=false
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - FILE_SERVER_PORT=3000
+      - REDIS_HOST=codeapi-redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - CODEAPI_INTERNAL_SERVICE_TOKEN=${CODEAPI_INTERNAL_SERVICE_TOKEN}
+    mem_limit: 256m
+    depends_on:
+      - codeapi-minio
+      - codeapi-redis
+
+  codeapi-redis:
+    <<: *restart
+    image: redis:7-alpine
+    networks: [default]
+    command: redis-server --requirepass ${REDIS_PASSWORD} --maxmemory 256mb --maxmemory-policy noeviction
+    mem_limit: 320m
+
+  codeapi-minio:
+    <<: *restart
+    image: quay.io/minio/minio
+    networks: [default]
+    volumes:
+      - minio_data:/data
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY}
+      - MINIO_DEFAULT_BUCKETS=${MINIO_BUCKET}
+    command: server /data
+    mem_limit: 512m
+
+volumes:
+  minio_data:
+
+networks:
+  # internal: no internet access for ANY codeapi service (belt & braces on top
+  # of the sandbox's own network isolation).
+  default:
+    internal: true
+  # shared with the LibreChat api container so it can reach http://codeapi-api:3112/v1
+  librechat_default:
+    external: true
