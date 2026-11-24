@@ -13,13 +13,23 @@ import { cn } from '~/utils';
  * you leave it. Replaces the icon rail's ten unlabelled glyphs with labelled
  * rows, and costs no standing width.
  */
-function Switcher({ links }: { links: NavLink[] }) {
+function Switcher({
+  links,
+  onLeaveInsights,
+  onNavigate,
+  routeActiveId,
+}: {
+  links: NavLink[];
+  onLeaveInsights?: () => void;
+  onNavigate?: () => void;
+  routeActiveId?: string;
+}) {
   const localize = useLocalize();
   const menuId = useId();
   const [isOpen, setIsOpen] = useState(false);
   const { active, setActive } = useActivePanel();
 
-  const activeId = resolveActivePanel(active, links);
+  const activeId = routeActiveId ?? resolveActivePanel(active, links);
   const activeLink = links.find((link) => link.id === activeId);
 
   const items = useMemo<t.MenuItemProps[]>(
@@ -28,11 +38,21 @@ function Switcher({ links }: { links: NavLink[] }) {
         id: `nav-panel-${link.id}`,
         label: localize(link.title),
         ariaChecked: link.id === activeId,
-        className: link.id === activeId ? 'bg-surface-active-alt' : undefined,
-        icon: <link.icon className="size-5 text-text-primary" aria-hidden="true" />,
-        onClick: () => setActive(link.id),
+        className: link.id === activeId ? 'bg-surface-nav-selected' : undefined,
+        icon: <link.icon className="text-text-primary size-5" aria-hidden="true" />,
+        onClick: () => {
+          if (link.onClick) {
+            link.onClick();
+            onNavigate?.();
+            return;
+          }
+          setActive(link.id);
+          if (routeActiveId) {
+            onLeaveInsights?.();
+          }
+        },
       })),
-    [links, activeId, localize, setActive],
+    [links, activeId, localize, onLeaveInsights, onNavigate, routeActiveId, setActive],
   );
 
   if (!activeLink) {
@@ -55,8 +75,8 @@ function Switcher({ links }: { links: NavLink[] }) {
       isOpen={isOpen}
       setIsOpen={setIsOpen}
       items={items}
-      className="min-w-[240px]"
-      iconClassName="mr-2 size-5"
+      minWidth="15rem"
+      iconClassName="me-2 size-5"
       trigger={
         <Ariakit.MenuButton
           data-testid="panel-switcher-button"
@@ -70,15 +90,15 @@ function Switcher({ links }: { links: NavLink[] }) {
            */
           className={cn(
             buttonVariants({ variant: 'ghost' }),
-            'h-10 min-w-0 flex-1 justify-start px-2 text-text-primary',
+            'text-text-primary h-10 min-w-0 flex-1 justify-start px-2',
           )}
         >
-          <activeLink.icon className="size-5 flex-shrink-0" aria-hidden="true" />
+          <activeLink.icon className="size-5 shrink-0" aria-hidden="true" />
           {/* Grows so the chevron settles on the trailing edge rather than trailing the label. */}
-          <span className="flex-1 truncate text-left text-sm font-medium">
+          <span className="flex-1 truncate text-start text-sm font-medium">
             {localize(activeLink.title)}
           </span>
-          <ChevronDown className="size-4 flex-shrink-0 text-text-secondary" aria-hidden="true" />
+          <ChevronDown className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
         </Ariakit.MenuButton>
       }
     />

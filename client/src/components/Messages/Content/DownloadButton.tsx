@@ -1,6 +1,6 @@
 import React from 'react';
-import { Download } from 'lucide-react';
-import ActionButton from '~/components/Messages/Content/ActionButton';
+import { Download } from 'lucide';
+import { ActionButton } from '@librechat/chat/components';
 import { useLocalize } from '~/hooks';
 
 interface DownloadButtonProps {

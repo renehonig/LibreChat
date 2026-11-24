@@ -16,10 +16,22 @@ jest.mock('~/hooks', () => ({
   },
 }));
 
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  useExpandCollapse: (isExpanded: boolean) => ({
+    style: {
+      display: 'grid',
+      gridTemplateRows: isExpanded ? '1fr' : '0fr',
+      opacity: isExpanded ? 1 : 0,
+    },
+    ref: { current: null },
+  }),
+}));
+
 // Mock the MemoryInfo component
-jest.mock('../MemoryInfo', () => ({
-  __esModule: true,
-  default: ({ memoryArtifacts }: { memoryArtifacts: MemoryArtifact[] }) => (
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  MemoryInfo: ({ memoryArtifacts }: { memoryArtifacts: MemoryArtifact[] }) => (
     <div data-testid="memory-info">
       {memoryArtifacts.map((artifact, index) => (
         <div key={index} data-testid={`memory-artifact-${artifact.type}`}>
@@ -29,7 +41,6 @@ jest.mock('../MemoryInfo', () => ({
     </div>
   ),
 }));
-
 describe('MemoryArtifacts', () => {
   const createMemoryAttachment = (type: 'update' | 'delete' | 'error', key: string): TAttachment =>
     ({
@@ -66,8 +77,7 @@ describe('MemoryArtifacts', () => {
       render(<MemoryArtifacts attachments={attachments} />);
 
       const button = screen.getByRole('button');
-      expect(button).toHaveClass('text-text-secondary-alt');
-      expect(button).toHaveClass('hover:text-text-primary');
+      expect(button).toHaveClass('text-text-secondary');
       expect(button).not.toHaveClass('text-status-error');
     });
 
@@ -121,9 +131,50 @@ describe('MemoryArtifacts', () => {
       expect(button).toHaveClass('text-status-error');
       expect(screen.getByText('Memory Error')).toBeInTheDocument();
     });
+
+    test('ignores attachments already rendered as an inline memory tool card', () => {
+      /** A `set_memory`/`delete_memory` call routes to `MemoryCall`, which
+       *  shows the same key, value and outcome. Counting its attachment here
+       *  too rendered one mutation twice. `toolCallId` is the discriminator. */
+      const linked = {
+        ...createMemoryAttachment('update', 'memory1'),
+        toolCallId: 'call_abc123',
+      } as TAttachment;
+
+      const { container } = render(<MemoryArtifacts attachments={[linked]} />);
+
+      expect(container).toBeEmptyDOMElement();
+    });
+
+    test('still renders a memory attachment carrying no tool call id', () => {
+      render(<MemoryArtifacts attachments={[createMemoryAttachment('update', 'memory1')]} />);
+
+      fireEvent.click(screen.getByRole('button'));
+
+      expect(screen.getByTestId('memory-artifact-update')).toBeInTheDocument();
+    });
   });
 
   describe('Collapse/Expand Functionality', () => {
+    test('uses the standard tool row and expanded panel styling', () => {
+      const attachments = [createMemoryAttachment('update', 'memory1')];
+
+      render(<MemoryArtifacts attachments={attachments} />);
+
+      const button = screen.getByRole('button');
+      expect(button.parentElement).toHaveClass('my-1.5', 'h-5');
+      expect(button).toHaveClass('group/disclosure');
+
+      fireEvent.click(button);
+
+      expect(screen.getByTestId('memory-info').parentElement).toHaveClass(
+        'mb-2',
+        'mt-0',
+        'rounded-lg',
+        'bg-surface-secondary',
+      );
+    });
+
     test('toggles memory info visibility on button click', () => {
       const attachments = [createMemoryAttachment('update', 'memory1')];
 

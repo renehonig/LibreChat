@@ -1,13 +1,10 @@
-import React, { memo, useMemo, useRef, useEffect } from 'react';
-import { useRecoilValue } from 'recoil';
+import React, { memo, useRef, useEffect } from 'react';
+import { FADE_HYDRATION_THRESHOLD } from '@librechat/chat/components';
 import { getRemarkPlugins, getRehypePlugins, getMarkdownComponents } from './markdownConfig';
-import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import MarkdownErrorBoundary from './MarkdownErrorBoundary';
-import { FADE_HYDRATION_THRESHOLD } from './animate';
-import { useMessageContext } from '~/Providers';
 import MarkdownBlocks from './MarkdownBlocks';
-import { preprocessLaTeX } from '~/utils';
-import store from '~/store';
+import { useRehypeModules } from './rehype';
 
 type TContentProps = {
   content: string;
@@ -15,12 +12,15 @@ type TContentProps = {
 };
 
 const Markdown = memo(function Markdown({ content = '', isLatestMessage }: TContentProps) {
-  const { isSubmitting = false } = useMessageContext();
+  const { useMessage, useLaTeXParsing, useSmoothStreaming } = useMessagePartsHost();
+  const { isSubmitting = false } = useMessage();
   const smoothStreaming = useSmoothStreaming();
-  const LaTeXParsing = useRecoilValue<boolean>(store.LaTeXParsing);
+  const LaTeXParsing = useLaTeXParsing();
+  const rehypeModules = useRehypeModules(content);
   const isInitializing = content === '';
 
-  const animate = smoothStreaming && isLatestMessage && isSubmitting;
+  const streaming = isLatestMessage && isSubmitting;
+  const animate = smoothStreaming && streaming;
 
   // Hydration signal for the fade: substantial content already present at the
   // render where `animate` flips on means resumed/switched-to/follow-up
@@ -39,13 +39,6 @@ const Markdown = memo(function Markdown({ content = '', isLatestMessage }: TCont
     }
   }, [animate]);
 
-  const currentContent = useMemo(() => {
-    if (isInitializing) {
-      return '';
-    }
-    return LaTeXParsing ? preprocessLaTeX(content) : content;
-  }, [content, LaTeXParsing, isInitializing]);
-
   if (isInitializing) {
     return (
       <div className="absolute">
@@ -59,9 +52,10 @@ const Markdown = memo(function Markdown({ content = '', isLatestMessage }: TCont
   return (
     <MarkdownErrorBoundary content={content} codeExecution={true}>
       <MarkdownBlocks
-        content={currentContent}
-        remarkPlugins={getRemarkPlugins()}
-        rehypePlugins={getRehypePlugins()}
+        content={content}
+        streaming={streaming}
+        remarkPlugins={getRemarkPlugins(LaTeXParsing)}
+        rehypePlugins={getRehypePlugins(rehypeModules)}
         components={getMarkdownComponents()}
         animate={animate}
         hydrated={hydratedRef.current}
